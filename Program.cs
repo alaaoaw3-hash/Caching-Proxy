@@ -1,6 +1,8 @@
 ﻿using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 
 namespace Caching_Proxy
 {
@@ -8,53 +10,60 @@ namespace Caching_Proxy
     {
         static async Task Main(string[] args)
         {
-            if(args.Length < 4 || args.Length > 4)
+            // FIRST: check if the command/request is full and whole
+            bool correctRequest = Tools.CheckRequest(args);
+            if(!correctRequest) return;
+
+            // Create JSON file that will hold the caches
+            if (!File.Exists("cachedRequests.json"))
             {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("Invalid number of arguments. Try again");
-                Console.ResetColor();
+                File.WriteAllText("cachedRequests.json", "[]");
             }
-            else if(args[0] != "port")
-            {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("First argument must be \"port\"");
-                Console.ResetColor();
-            }
-            else if(!int.TryParse(args[1], out _))
-            {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("Second argument must be an integer");
-                Console.ResetColor();
-            }
-            else if(args[2] != "origin")
-            {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("Third argument must be \"origin\"");
-                Console.ResetColor();
-            }
-            else if(!Uri.TryCreate(args[4], UriKind.Absolute, out _))
-            {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("Fourth argument must be a URL.");
-                Console.ResetColor();
-            }
-            int port = 5000;
+            
+            // preparing and starting listening
+            int port = Convert.ToInt16(args[1]);
+            List<PreviousRequest> listOfPRs = [];
             HttpListener listener = new();
             listener.Prefixes.Add($"http://localhost:{port}/");
             listener.Start();
-            Console.WriteLine("Started listening on port 5000");
+            Console.WriteLine($"Started listening on port {port}");
+            Console.WriteLine($"On: http://localhost:{port}");
             Console.WriteLine("Press ctrl + c to terminate program");
 
+            // if the user hits ctrl + c, json file should be cleaned up
+            Console.CancelKeyPress += (sender, e) => {
+                Console.WriteLine("Cleaning up the JSON file...");
+                File.WriteAllText("cachedRequests.json", "[]");
+                Console.WriteLine("Done.");
+                e.Cancel = false;
+            };
+
+            // processing incoming requests
             while (true)
             {
                 HttpClient client = new();
-                var context = await listener.GetContextAsync();
+                var context = await listener.GetContextAsync();     // <-- the actual HTTP request will be stored here
+                    Console.WriteLine("Received a context.");
                 if(context.Request.HttpMethod == "GET")
                 {
-                    string response = "first time writing this.";
-                    byte[] buffer = System.Text.Encoding.UTF8.GetBytes(response);
+                    Console.WriteLine("It is a GET method.");
+                    string fullUrl = args[3] + context.Request.Url.PathAndQuery ?? args[3];
+                    var response = await client.GetStringAsync(fullUrl); 
+                        Console.WriteLine("Got a response from the origin.");
+                    // Caching the request
+                    PreviousRequest previousRequest = new(fullUrl, response);
+
+                    // save the data to the JSON file
+                    listOfPRs.Add(previousRequest);
+                    var option = new JsonSerializerOptions { WriteIndented = true };
+                    var listSerialized = JsonSerializer.Serialize(listOfPRs, option);
+                    File.WriteAllText("cachedRequests.json", listSerialized);
+                        Console.WriteLine("Cached the request URL.");
+
+                    // Write the data back to the client    
+                    byte[] buffer = Encoding.UTF8.GetBytes(response);
                     context.Response.OutputStream.Write(buffer, 0, buffer.Length);
-                    context.Response.OutputStream.Close();
+                    context.Response.OutputStream.Close();  
                 }
                 else
                 {
