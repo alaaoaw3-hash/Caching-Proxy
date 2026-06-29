@@ -126,6 +126,13 @@ Caching_Proxy/
 
 ---
 
+## 🗺️ Project Reference
+
+This project was built as part of the [roadmap.sh](https://roadmap.sh) backend project challenges.
+Check out the full project spec here: [Caching Server — roadmap.sh](https://roadmap.sh/projects/caching-server)
+
+---
+
 ## 📄 License
 
 This project is open source and available under the [MIT License](LICENSE).
