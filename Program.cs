@@ -1,6 +1,7 @@
 ﻿using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 
@@ -20,57 +21,75 @@ namespace Caching_Proxy
                 File.WriteAllText("cachedRequests.json", "[]");
             }
             
-            // preparing and starting listening
-            int port = Convert.ToInt16(args[1]);
-            List<PreviousRequest> listOfPRs = [];
+            // preparing and starting to listen
+            int port = Convert.ToInt32(args[1]);
             HttpListener listener = new();
+            HttpClient client = new();
             listener.Prefixes.Add($"http://localhost:{port}/");
             listener.Start();
             Console.WriteLine($"Started listening on port {port}");
             Console.WriteLine($"On: http://localhost:{port}");
             Console.WriteLine("Press ctrl + c to terminate program");
 
-            // if the user hits ctrl + c, json file should be cleaned up
-            Console.CancelKeyPress += (sender, e) => {
-                Console.WriteLine("Cleaning up the JSON file...");
-                File.WriteAllText("cachedRequests.json", "[]");
-                Console.WriteLine("Done.");
-                e.Cancel = false;
-            };
 
             // processing incoming requests
             while (true)
             {
-                HttpClient client = new();
                 var context = await listener.GetContextAsync();     // <-- the actual HTTP request will be stored here
-                    Console.WriteLine("Received a context.");
+
                 if(context.Request.HttpMethod == "GET")
                 {
-                    Console.WriteLine("It is a GET method.");
-                    string fullUrl = args[3] + context.Request.Url.PathAndQuery ?? args[3];
-                    var response = await client.GetStringAsync(fullUrl); 
-                        Console.WriteLine("Got a response from the origin.");
-                    // Caching the request
-                    PreviousRequest previousRequest = new(fullUrl, response);
+                    string fullUrl = args[3] + (context.Request.Url?.PathAndQuery ?? "");
 
-                    // save the data to the JSON file
-                    listOfPRs.Add(previousRequest);
-                    var option = new JsonSerializerOptions { WriteIndented = true };
-                    var listSerialized = JsonSerializer.Serialize(listOfPRs, option);
-                    File.WriteAllText("cachedRequests.json", listSerialized);
-                        Console.WriteLine("Cached the request URL.");
+                    if(Tools.SendCacheIfPossible(context, fullUrl))
+                    {
+                        continue;
+                    }
 
-                    // Write the data back to the client    
-                    byte[] buffer = Encoding.UTF8.GetBytes(response);
-                    context.Response.OutputStream.Write(buffer, 0, buffer.Length);
-                    context.Response.OutputStream.Close();  
+                    try
+                    {
+                        using var HttpResponse = await client.GetAsync(fullUrl);
+                        context.Response.StatusCode = (int)HttpResponse.StatusCode;
+                        Response MyResponse = new()
+                        {
+                            Body = await HttpResponse.Content.ReadAsStringAsync(),
+                            StatusCode = (int)HttpResponse.StatusCode,
+                            Headers = new Dictionary<string, string>()
+                        };
+                        Tools.PopulateHeadersDictionary(MyResponse, HttpResponse);
+
+                        // Caching the request
+                        PreviousRequest previousRequest = new(fullUrl, MyResponse);
+                        Tools.SaveToJson(previousRequest, false, fullUrl);
+    
+                        Tools.WriteToClient(context, MyResponse); 
+                    }
+                    catch(HttpRequestException)
+                    {
+                        Console.ForegroundColor = ConsoleColor.Red;
+                        Console.WriteLine("Couldn't get the IP address of the origin. Possible network problem.");
+                        Console.ResetColor();
+
+                        context.Response.StatusCode = 503;
+                        Tools.WriteToClient(context, new Response{ Body = "A network error happened while the app was trying to get to the origin.", StatusCode = 503});
+                        continue;
+                    }
+
                 }
                 else
                 {
-                    string response = "We don't handle such HTTP request at the moment.";
-                    byte[] buffer = System.Text.Encoding.UTF8.GetBytes(response);
-                    context.Response.OutputStream.Write(buffer, 0, buffer.Length);
-                    context.Response.OutputStream.Close();
+                    // Signal request failure
+                    context.Response.StatusCode = 405;
+                    // Tell what is the only allowed HTTP request method
+                    context.Response.Headers.Add("Allow", "GET");
+
+                    Response response = new()
+                    {
+                      Body = "We don't handle such HTTP methods at the moment.",
+                      StatusCode = 405
+                    };
+
+                    Tools.WriteToClient(context, response);
                 }
             }
             
